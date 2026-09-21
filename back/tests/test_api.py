@@ -48,7 +48,9 @@ def test_create_list_and_delete_meeting(client: TestClient):
 def test_participant_can_join_many_meetings(client: TestClient):
     anna = create_participant(client, "Anna", "anna@example.com")
     for title in ("Standup", "Retro"):
-        response = client.post("/api/meetings", json=meeting_payload(title=title, participant_ids=[anna["id"]]))
+        response = client.post(
+            "/api/meetings", json=meeting_payload(title=title, participant_ids=[anna["id"]])
+        )
         assert response.status_code == 201
 
     meetings = client.get("/api/meetings").json()

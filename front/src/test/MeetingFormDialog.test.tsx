@@ -18,7 +18,10 @@ describe("MeetingFormDialog", () => {
 
     expect(await screen.findByText("Title is required")).toBeInTheDocument()
     expect(screen.getByText("Provide a call link, a place, or both")).toBeInTheDocument()
-    expect(fetchMock).not.toHaveBeenCalledWith("/api/meetings", expect.objectContaining({ method: "POST" }))
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "/api/meetings",
+      expect.objectContaining({ method: "POST" }),
+    )
   })
 
   it("rejects a malformed call link", async () => {

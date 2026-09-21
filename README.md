@@ -83,3 +83,14 @@ cd back && TEST_DATABASE_URL=postgresql+psycopg://meetings:meetings@localhost:54
 # frontend
 cd front && npm test
 ```
+
+## Code style
+
+CI (`.github/workflows/code-style.yml`) runs on every push to `main` and on pull requests:
+
+| Part | Tools | Run locally | Auto-fix |
+| --- | --- | --- | --- |
+| `back/` | Ruff (lint + format) | `uv run ruff check . && uv run ruff format --check .` | `uv run ruff check --fix . && uv run ruff format .` |
+| `front/` | ESLint, Prettier, `tsc` | `npm run lint && npm run format:check && npm run typecheck` | `npm run format` |
+
+Config lives in `back/pyproject.toml` (`[tool.ruff]`), `front/eslint.config.js` and `front/.prettierrc.json`.

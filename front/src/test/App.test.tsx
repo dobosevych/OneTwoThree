@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { describe, expect, it } from "vitest"
 
 import App from "@/App"
-import { parseNewParticipant } from "@/components/ParticipantsMultiSelect"
+import { parseNewParticipant } from "@/lib/participants"
 import { mockFetch, renderWithQuery, sampleMeeting } from "@/test/utils"
 
 describe("App", () => {
@@ -37,7 +37,10 @@ describe("App", () => {
 
     const dialog = await screen.findByRole("alertdialog")
     expect(dialog).toHaveTextContent("Delete Sprint planning?")
-    expect(fetchMock).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ method: "DELETE" }))
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ method: "DELETE" }),
+    )
 
     await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }))
     expect(fetchMock).toHaveBeenCalledWith(

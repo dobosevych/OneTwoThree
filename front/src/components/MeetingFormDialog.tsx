@@ -105,7 +105,9 @@ export function MeetingFormDialog({ open, onOpenChange }: MeetingFormDialogProps
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>New meeting</DialogTitle>
-          <DialogDescription>Add a call link, a place, or both so people know where to go.</DialogDescription>
+          <DialogDescription>
+            Add a call link, a place, or both so people know where to go.
+          </DialogDescription>
         </DialogHeader>
 
         <Form {...form}>
@@ -179,7 +181,7 @@ export function MeetingFormDialog({ open, onOpenChange }: MeetingFormDialogProps
             </div>
 
             {form.formState.errors.root && (
-              <p className="text-destructive text-sm">{form.formState.errors.root.message}</p>
+              <p className="text-sm text-destructive">{form.formState.errors.root.message}</p>
             )}
 
             <DialogFooter>

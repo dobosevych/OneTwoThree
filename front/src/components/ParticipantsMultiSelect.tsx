@@ -14,20 +14,9 @@ import {
 } from "@/components/ui/command"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useCreateParticipant, useParticipants } from "@/hooks/useParticipants"
+import { parseNewParticipant } from "@/lib/participants"
 import { cn } from "@/lib/utils"
-import type { Participant, ParticipantCreate } from "@/types"
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-
-/** "Anna Kovalenko anna@example.com" -> { name, email }; null when it isn't a name + email. */
-export function parseNewParticipant(input: string): ParticipantCreate | null {
-  const tokens = input.trim().replace(/[<>,]/g, " ").split(/\s+/).filter(Boolean)
-  const emailIndex = tokens.findIndex((token) => EMAIL_RE.test(token))
-  if (emailIndex === -1) return null
-  const name = tokens.filter((_, i) => i !== emailIndex).join(" ")
-  if (!name) return null
-  return { name, email: tokens[emailIndex].toLowerCase() }
-}
+import type { Participant } from "@/types"
 
 interface ParticipantsMultiSelectProps {
   value: Participant[]
@@ -43,7 +32,8 @@ export function ParticipantsMultiSelect({ value, onChange, id }: ParticipantsMul
   const createParticipant = useCreateParticipant()
 
   const selectedIds = new Set(value.map((p) => p.id))
-  const canAdd = newParticipant !== null && !participants.some((p) => p.email === newParticipant.email)
+  const canAdd =
+    newParticipant !== null && !participants.some((p) => p.email === newParticipant.email)
 
   const toggle = (participant: Participant) => {
     onChange(
@@ -101,10 +91,14 @@ export function ParticipantsMultiSelect({ value, onChange, id }: ParticipantsMul
                       onSelect={() => toggle(participant)}
                     >
                       <Check
-                        className={cn(selectedIds.has(participant.id) ? "opacity-100" : "opacity-0")}
+                        className={cn(
+                          selectedIds.has(participant.id) ? "opacity-100" : "opacity-0",
+                        )}
                       />
                       <span>{participant.name}</span>
-                      <span className="text-muted-foreground ml-auto text-xs">{participant.email}</span>
+                      <span className="ml-auto text-xs text-muted-foreground">
+                        {participant.email}
+                      </span>
                     </CommandItem>
                   ))}
                 </CommandGroup>
@@ -134,7 +128,7 @@ export function ParticipantsMultiSelect({ value, onChange, id }: ParticipantsMul
               <button
                 type="button"
                 onClick={() => toggle(participant)}
-                className="hover:bg-muted-foreground/20 rounded-sm"
+                className="rounded-sm hover:bg-muted-foreground/20"
                 aria-label={`Remove ${participant.name}`}
               >
                 <X className="size-3" />

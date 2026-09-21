@@ -28,10 +28,7 @@ export function DeleteMeetingDialog({ meeting, onCancel, onConfirm }: DeleteMeet
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            variant="destructive"
-            onClick={() => meeting && onConfirm(meeting)}
-          >
+          <AlertDialogAction variant="destructive" onClick={() => meeting && onConfirm(meeting)}>
             Delete
           </AlertDialogAction>
         </AlertDialogFooter>

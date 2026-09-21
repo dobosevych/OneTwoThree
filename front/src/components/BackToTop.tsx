@@ -16,7 +16,7 @@ export function BackToTop() {
       type="button"
       aria-label="Back to top"
       onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-      className="bg-brand hover:bg-brand-dark fixed right-6 bottom-6 z-40 flex size-12 items-center justify-center rounded-full text-white shadow-lg"
+      className="fixed right-6 bottom-6 z-40 flex size-12 items-center justify-center rounded-full bg-brand text-white shadow-lg hover:bg-brand-dark"
     >
       <ChevronUp className="size-5" />
     </button>

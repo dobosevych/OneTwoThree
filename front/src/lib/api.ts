@@ -1,4 +1,10 @@
-import type { Meeting, MeetingCreate, Participant, ParticipantCreate, ValidationIssue } from "@/types"
+import type {
+  Meeting,
+  MeetingCreate,
+  Participant,
+  ParticipantCreate,
+  ValidationIssue,
+} from "@/types"
 
 export class ApiError extends Error {
   readonly status: number

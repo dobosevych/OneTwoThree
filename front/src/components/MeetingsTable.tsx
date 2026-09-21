@@ -44,7 +44,7 @@ function CallLink({ href }: { href: string | null }) {
       href={href}
       target="_blank"
       rel="noreferrer"
-      className="text-primary inline-flex items-center gap-1 font-medium underline-offset-4 hover:underline"
+      className="inline-flex items-center gap-1 font-medium text-primary underline-offset-4 hover:underline"
     >
       Join <ExternalLink className="size-3.5" />
     </a>
@@ -89,7 +89,9 @@ export function MeetingsTable({ meetings, onDelete }: MeetingsTableProps) {
                 <TableCell className="max-w-xs">
                   <div className="font-medium">{meeting.title}</div>
                   {meeting.description && (
-                    <div className="text-muted-foreground truncate text-sm">{meeting.description}</div>
+                    <div className="truncate text-sm text-muted-foreground">
+                      {meeting.description}
+                    </div>
                   )}
                 </TableCell>
                 <TableCell>
@@ -98,7 +100,9 @@ export function MeetingsTable({ meetings, onDelete }: MeetingsTableProps) {
                 <TableCell>
                   <CallLink href={meeting.call_link} />
                 </TableCell>
-                <TableCell>{meeting.place ?? <span className="text-muted-foreground">—</span>}</TableCell>
+                <TableCell>
+                  {meeting.place ?? <span className="text-muted-foreground">—</span>}
+                </TableCell>
                 <TableCell>
                   <DeleteButton meeting={meeting} onDelete={onDelete} />
                 </TableCell>
@@ -115,7 +119,9 @@ export function MeetingsTable({ meetings, onDelete }: MeetingsTableProps) {
               <div className="min-w-0">
                 <CardTitle>{meeting.title}</CardTitle>
                 {meeting.description && (
-                  <p className="text-muted-foreground mt-1 line-clamp-2 text-sm">{meeting.description}</p>
+                  <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
+                    {meeting.description}
+                  </p>
                 )}
               </div>
               <DeleteButton meeting={meeting} onDelete={onDelete} />

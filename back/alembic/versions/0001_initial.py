@@ -4,6 +4,7 @@ Revision ID: 0001
 Revises:
 Create Date: 2026-09-21
 """
+
 import sqlalchemy as sa
 from alembic import op
 
@@ -33,9 +34,14 @@ def upgrade() -> None:
     )
     op.create_table(
         "meeting_participants",
-        sa.Column("meeting_id", sa.Uuid(), sa.ForeignKey("meetings.id", ondelete="CASCADE"), primary_key=True),
         sa.Column(
-            "participant_id", sa.Uuid(), sa.ForeignKey("participants.id", ondelete="CASCADE"), primary_key=True
+            "meeting_id", sa.Uuid(), sa.ForeignKey("meetings.id", ondelete="CASCADE"), primary_key=True
+        ),
+        sa.Column(
+            "participant_id",
+            sa.Uuid(),
+            sa.ForeignKey("participants.id", ondelete="CASCADE"),
+            primary_key=True,
         ),
     )
     op.create_index("ix_meeting_participants_participant_id", "meeting_participants", ["participant_id"])
