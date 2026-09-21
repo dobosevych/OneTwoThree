@@ -62,3 +62,14 @@ jobs:
 
       - name: Type check
         run: npm run typecheck
+
+  infra:
+    name: Infra (cfn-lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Lint CloudFormation templates
+        run: uvx cfn-lint --format parseable infra/*.yaml

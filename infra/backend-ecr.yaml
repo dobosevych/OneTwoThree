@@ -1,0 +1,34 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Meetings App - ECR repository for the backend image (deployed before the app stack).
+
+Parameters:
+  Project:
+    Type: String
+    Default: meetings
+    Description: Name prefix for all resources.
+
+Resources:
+  BackendRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub ${Project}-backend
+      ImageTagMutability: MUTABLE
+      EmptyOnDelete: true
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      # Keep storage inside the 500 MB free tier: only the newest images are retained.
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [{
+              "rulePriority": 1,
+              "description": "Keep the last 5 images",
+              "selection": { "tagStatus": "any", "countType": "imageCountMoreThan", "countNumber": 5 },
+              "action": { "type": "expire" }
+            }]
+          }
+
+Outputs:
+  RepositoryUri:
+    Description: Push backend images here.
+    Value: !GetAtt BackendRepository.RepositoryUri

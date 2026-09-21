@@ -7,3 +7,6 @@ node_modules/
 dist/
 .idea/
 .DS_Store
+
+# AWS app-stack overrides (may hold account-specific values)
+infra/*.params.env
