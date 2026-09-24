@@ -32,7 +32,7 @@ BACKEND_FUNCTION  := $(PROJECT)-backend
 BACKEND_PARAMS    := infra/backend.params.env
 FRONTEND_STACK    := $(PROJECT)-frontend
 # Every resource gets this tag (in the templates and as a stack tag).
-STACK_TAGS        := PROJECT_NAME=$(PROJECT)
+STACK_TAGS        := =$(PROJECT)
 
 # CloudFront flat-rate Free plan ($0/month); PAY_AS_YOU_GO if the account can't subscribe (AWS Free Tier
 # accounts, or 3 free plans already in use).
