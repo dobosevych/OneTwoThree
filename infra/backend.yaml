@@ -47,7 +47,7 @@ Parameters:
   # --- Database (Aurora Serverless v2, PostgreSQL) ---
   DbEngineVersion:
     Type: String
-    Default: "16.6"
+    Default: "16.14"
     Description: Aurora PostgreSQL version; scaling to 0 ACU needs 13.15+, 14.12+, 15.7+ or 16.3+.
   DbMinCapacity:
     Type: Number

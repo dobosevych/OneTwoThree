@@ -67,6 +67,15 @@ FRONTEND_ZONE_ID  = $(shell $(LOAD_ENV) $(CERT_SH) zone-id $(FRONTEND_DOMAIN) 2>
 # The custom domain is attached once its certificate is issued; until then only the CloudFront domain serves.
 FRONTEND_DOMAIN_ARGS = $(if $(FRONTEND_CERT_ARN),CertificateArn=$(FRONTEND_CERT_ARN) DomainName=$(FRONTEND_DOMAIN) HostedZoneId=$(FRONTEND_ZONE_ID))
 
+# A stack whose first create failed is left in ROLLBACK_COMPLETE (holding no resources) and can't be
+# updated; delete it so the next deploy creates it again.
+define clear_failed_stack
+	@if [ "$$(aws cloudformation describe-stacks --stack-name $(1) --query 'Stacks[0].StackStatus' --output text 2>/dev/null)" = ROLLBACK_COMPLETE ]; then \
+	  echo "Stack $(1) is in ROLLBACK_COMPLETE after a failed create; deleting it before deploying again"; \
+	  aws cloudformation delete-stack --stack-name $(1) && aws cloudformation wait stack-delete-complete --stack-name $(1); \
+	fi
+endef
+
 TEST_DB_URL := postgresql+psycopg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:$(or $(DB_PORT),5432)/meetings_test
 
 ##@ Local (Docker Compose)
@@ -142,6 +151,7 @@ aws-backend-deploy: aws-check aws-backend-ecr aws-backend-push aws-backend-stack
 
 .PHONY: aws-backend-ecr
 aws-backend-ecr: ## Create/update the ECR repository stack
+	$(call clear_failed_stack,$(BACKEND_ECR_STACK))
 	aws cloudformation deploy --stack-name $(BACKEND_ECR_STACK) --template-file infra/backend-ecr.yaml \
 	  --parameter-overrides ProjectName=$(PROJECT) --tags $(STACK_TAGS) --no-fail-on-empty-changeset
 
@@ -157,6 +167,7 @@ aws-backend-push: aws-backend-login ## Build the Lambda image for linux/$(ARCH) 
 
 .PHONY: aws-backend-stack
 aws-backend-stack: ## Create/update the backend stack (VPC, Aurora, Lambda) with image tag $(TAG); KEEP_IMAGE=1 keeps the current image
+	$(call clear_failed_stack,$(BACKEND_STACK))
 	@test -n "$(ECR_URI)" || { echo "ECR repository not found: run \`make aws-backend-ecr\` first (and check AWS credentials in .env)"; exit 1; }
 	aws cloudformation deploy --stack-name $(BACKEND_STACK) --template-file infra/backend.yaml \
 	  --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset --tags $(STACK_TAGS) \
@@ -209,6 +220,7 @@ aws-frontend-deploy: aws-check aws-frontend-stack aws-frontend-publish aws-front
 
 .PHONY: aws-frontend-stack
 aws-frontend-stack: ## Create/update the frontend stack (S3, CloudFront + WAF on the Free plan, custom domain once its certificate is issued)
+	$(call clear_failed_stack,$(FRONTEND_STACK))
 	aws cloudformation deploy --stack-name $(FRONTEND_STACK) --template-file infra/frontend.yaml \
 	  --no-fail-on-empty-changeset --tags $(STACK_TAGS) \
 	  --parameter-overrides ProjectName=$(PROJECT) PricingPlan=$(CLOUDFRONT_PLAN) \
