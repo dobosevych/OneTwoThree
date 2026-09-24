@@ -5,39 +5,67 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 # .env holds compose settings and AWS credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
-# AWS_REGION, optionally AWS_SESSION_TOKEN). Only the keys defined in .env are exported.
+# optionally AWS_SESSION_TOKEN). Only the keys defined in .env are exported.
 -include .env
 export $(shell sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' .env 2>/dev/null)
 
 # ---------------------------------------------------------------------------
-# Settings (override on the command line, e.g. `make aws-backend-deploy ARCH=amd64`)
+# Settings (override on the command line, e.g. `make aws-deploy ARCH=amd64`)
 # ---------------------------------------------------------------------------
 PROJECT     ?= meetings
-AWS_REGION  ?= eu-central-1
+# Everything is deployed to us-east-1: CloudFront takes custom-domain certificates only from there.
+# (Set here, not in .env; `make … AWS_REGION=…` still overrides it for the backend.)
+AWS_REGION  := us-east-1
 export AWS_REGION
 export AWS_DEFAULT_REGION := $(AWS_REGION)
 
 # arm64 (Graviton, cheaper; native on Apple Silicon) or amd64
 ARCH        ?= arm64
-TAG         ?= $(shell git describe --always --dirty 2>/dev/null || date +%Y%m%d%H%M%S)
+# Lambda only picks up a new image when its URI changes, so uncommitted builds get a unique tag.
+ifndef TAG
+TAG         := $(shell git describe --always --dirty=-dirty-$$(date +%Y%m%d%H%M%S) 2>/dev/null || date +%Y%m%d%H%M%S)
+endif
 
 BACKEND_ECR_STACK := $(PROJECT)-backend-ecr
 BACKEND_STACK     := $(PROJECT)-backend
-DB_PASSWORD_PARAM := /$(PROJECT)/db/password
+BACKEND_FUNCTION  := $(PROJECT)-backend
 BACKEND_PARAMS    := infra/backend.params.env
+FRONTEND_STACK    := $(PROJECT)-frontend
+# Every resource gets this tag (in the templates and as a stack tag).
+STACK_TAGS        := PROJECT_NAME=$(PROJECT)
 
-CFN_ARCH     = $(if $(filter arm64,$(ARCH)),ARM64,X86_64)
+# CloudFront flat-rate Free plan ($0/month); PAY_AS_YOU_GO if the account can't subscribe (AWS Free Tier
+# accounts, or 3 free plans already in use).
+CLOUDFRONT_PLAN   ?= FREE
+
+# Optional custom domain for the frontend (`make aws-frontend-https`); empty = CloudFront domain only.
+FRONTEND_DOMAIN   ?= onetwothree.dobosevych.com
+CERT_SH           := PROJECT_NAME=$(PROJECT) infra/scripts/cert.sh
+# Browser origins the API always allows besides the frontend's (local development).
+CORS_LOCAL        ?= http://localhost:3000,http://localhost:5173
+
+LAMBDA_ARCH  = $(if $(filter arm64,$(ARCH)),arm64,x86_64)
 HASH        := \#
+COMMA       := ,
 # $(shell) does not inherit exported variables in GNU make < 4.4 (macOS ships 3.81),
 # so AWS lookups inside $(shell) load .env themselves.
-AWS_SHELL   := set -a; [ -f .env ] && . ./.env; set +a; aws --region $(AWS_REGION)
+LOAD_ENV    := set -a; [ -f .env ] && . ./.env; set +a; export AWS_REGION=$(AWS_REGION) AWS_DEFAULT_REGION=$(AWS_REGION);
+AWS_SHELL   := $(LOAD_ENV) aws
 # Recursive (=) so they are looked up only when a recipe needs them, after the stacks exist.
-ECR_URI      = $(shell $(AWS_SHELL) cloudformation describe-stacks --stack-name $(BACKEND_ECR_STACK) \
-                 --query "Stacks[0].Outputs[?OutputKey=='RepositoryUri'].OutputValue" --output text)
+stack_output = $(shell $(AWS_SHELL) cloudformation describe-stacks --stack-name $(1) \
+                 --query "Stacks[0].Outputs[?OutputKey=='$(2)'].OutputValue" --output text 2>/dev/null)
+ECR_URI      = $(call stack_output,$(BACKEND_ECR_STACK),RepositoryUri)
 ECR_REGISTRY = $(firstword $(subst /, ,$(ECR_URI)))
 BACKEND_PARAMS_ARGS = $(shell [ -f $(BACKEND_PARAMS) ] && grep -v -e '^[[:space:]]*$(HASH)' -e '^[[:space:]]*$$' $(BACKEND_PARAMS))
-backend_output = $(shell $(AWS_SHELL) cloudformation describe-stacks --stack-name $(BACKEND_STACK) \
-                 --query "Stacks[0].Outputs[?OutputKey=='$(1)'].OutputValue" --output text)
+backend_output  = $(call stack_output,$(BACKEND_STACK),$(1))
+frontend_output = $(call stack_output,$(FRONTEND_STACK),$(1))
+API_URL          = $(call backend_output,ApiUrl)
+FRONTEND_ORIGINS = $(call frontend_output,SiteOrigins)
+CORS_ORIGINS_AWS = $(CORS_LOCAL)$(if $(FRONTEND_ORIGINS),$(COMMA)$(FRONTEND_ORIGINS))
+FRONTEND_CERT_ARN = $(if $(FRONTEND_DOMAIN),$(shell $(LOAD_ENV) $(CERT_SH) arn $(FRONTEND_DOMAIN) 2>/dev/null))
+FRONTEND_ZONE_ID  = $(shell $(LOAD_ENV) $(CERT_SH) zone-id $(FRONTEND_DOMAIN) 2>/dev/null)
+# The custom domain is attached once its certificate is issued; until then only the CloudFront domain serves.
+FRONTEND_DOMAIN_ARGS = $(if $(FRONTEND_CERT_ARN),CertificateArn=$(FRONTEND_CERT_ARN) DomainName=$(FRONTEND_DOMAIN) HostedZoneId=$(FRONTEND_ZONE_ID))
 
 TEST_DB_URL := postgresql+psycopg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:$(or $(DB_PORT),5432)/meetings_test
 
@@ -99,30 +127,23 @@ format: ## Auto-format backend and frontend
 	cd back && uv run ruff check --fix . && uv run ruff format .
 	cd front && npm run format
 
-##@ AWS backend (ECS Fargate + RDS via CloudFormation)
+##@ AWS backend (Lambda + Aurora Serverless v2 via CloudFormation)
 
 .PHONY: aws-check
 aws-check: ## Verify AWS credentials from .env work
 	@aws sts get-caller-identity --query '[Account, Arn]' --output text \
-	  || { echo "AWS credentials missing/invalid: set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION in .env"; exit 1; }
+	  || { echo "AWS credentials missing/invalid: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env"; exit 1; }
 
 .PHONY: aws-backend-deploy
-aws-backend-deploy: aws-check aws-backend-ecr aws-backend-db-password aws-backend-push aws-backend-stack ## Deploy backend: ECR, image, RDS, Fargate service
+aws-backend-deploy: aws-check aws-backend-ecr aws-backend-push aws-backend-stack aws-backend-migrate ## Deploy backend: ECR, image, Aurora, Lambda + function URL, migrations
 	@echo
-	@echo "API:      $(call backend_output,ApiUrl)"
+	@echo "API:      $(API_URL)"
 	@echo "API docs: $(call backend_output,ApiDocsUrl)"
 
 .PHONY: aws-backend-ecr
 aws-backend-ecr: ## Create/update the ECR repository stack
 	aws cloudformation deploy --stack-name $(BACKEND_ECR_STACK) --template-file infra/backend-ecr.yaml \
-	  --parameter-overrides Project=$(PROJECT) --no-fail-on-empty-changeset
-
-.PHONY: aws-backend-db-password
-aws-backend-db-password: ## Create the DB password in SSM Parameter Store (once; never overwritten)
-	@aws ssm get-parameter --name $(DB_PASSWORD_PARAM) >/dev/null 2>&1 \
-	  && echo "SSM parameter $(DB_PASSWORD_PARAM) already exists" \
-	  || { aws ssm put-parameter --name $(DB_PASSWORD_PARAM) --type SecureString \
-	         --value "$$(openssl rand -hex 24)" >/dev/null && echo "Created SSM parameter $(DB_PASSWORD_PARAM)"; }
+	  --parameter-overrides ProjectName=$(PROJECT) --tags $(STACK_TAGS) --no-fail-on-empty-changeset
 
 .PHONY: aws-backend-login
 aws-backend-login: ## Log Docker in to ECR
@@ -130,17 +151,25 @@ aws-backend-login: ## Log Docker in to ECR
 	aws ecr get-login-password | docker login --username AWS --password-stdin $(ECR_REGISTRY)
 
 .PHONY: aws-backend-push
-aws-backend-push: aws-backend-login ## Build the backend image for linux/$(ARCH) and push it with tag $(TAG)
-	docker buildx build --platform linux/$(ARCH) --provenance=false \
+aws-backend-push: aws-backend-login ## Build the Lambda image for linux/$(ARCH) and push it with tag $(TAG)
+	docker buildx build --platform linux/$(ARCH) --provenance=false -f back/Dockerfile.lambda \
 	  -t $(ECR_URI):$(TAG) -t $(ECR_URI):latest --push back
 
 .PHONY: aws-backend-stack
-aws-backend-stack: ## Create/update the backend stack (VPC, RDS, ALB, ECS) with image tag $(TAG)
+aws-backend-stack: ## Create/update the backend stack (VPC, Aurora, Lambda) with image tag $(TAG); KEEP_IMAGE=1 keeps the current image
 	@test -n "$(ECR_URI)" || { echo "ECR repository not found: run \`make aws-backend-ecr\` first (and check AWS credentials in .env)"; exit 1; }
 	aws cloudformation deploy --stack-name $(BACKEND_STACK) --template-file infra/backend.yaml \
-	  --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset \
-	  --parameter-overrides Project=$(PROJECT) ImageUri=$(ECR_URI):$(TAG) \
-	    CpuArchitecture=$(CFN_ARCH) DbPasswordParameter=$(DB_PASSWORD_PARAM) $(BACKEND_PARAMS_ARGS)
+	  --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset --tags $(STACK_TAGS) \
+	  --parameter-overrides ProjectName=$(PROJECT) $(if $(KEEP_IMAGE),,ImageUri=$(ECR_URI):$(TAG)) \
+	    Architecture=$(LAMBDA_ARCH) "CorsOrigins=$(CORS_ORIGINS_AWS)" $(BACKEND_PARAMS_ARGS)
+
+.PHONY: aws-backend-migrate
+aws-backend-migrate: ## Run Alembic migrations (and seeding) inside the Lambda
+	@resp=$$(mktemp); \
+	err=$$(aws lambda invoke --function-name $(BACKEND_FUNCTION) --cli-binary-format raw-in-base64-out \
+	  --payload '{"action": "migrate"}' --cli-read-timeout 0 --query FunctionError --output text "$$resp"); \
+	echo "Migrations: $$(cat "$$resp")"; rm -f "$$resp"; \
+	[ "$$err" = None ] || { echo "Migration failed ($$err): make aws-backend-logs"; exit 1; }
 
 .PHONY: aws-backend-outputs
 aws-backend-outputs: ## Show backend stack outputs (API URL, DB endpoint, ...)
@@ -148,42 +177,117 @@ aws-backend-outputs: ## Show backend stack outputs (API URL, DB endpoint, ...)
 	  --query "Stacks[0].Outputs[].[OutputKey, OutputValue]" --output table
 
 .PHONY: aws-backend-status
-aws-backend-status: ## Show ECS service status and recent events
-	@aws ecs describe-services --cluster $(PROJECT) --services $(PROJECT)-backend \
-	  --query "services[0].{status:status, running:runningCount, desired:desiredCount, events:events[:5].message}" \
-	  --output yaml
+aws-backend-status: ## Show Lambda and Aurora status
+	@aws lambda get-function-configuration --function-name $(BACKEND_FUNCTION) \
+	  --query "{state:State, lastUpdate:LastUpdateStatus, image:CodeSha256, memory:MemorySize, timeout:Timeout}" --output yaml
+	@aws rds describe-db-clusters --db-cluster-identifier $(PROJECT)-db \
+	  --query "DBClusters[0].{status:Status, capacity:ServerlessV2ScalingConfiguration}" --output yaml
 
 .PHONY: aws-backend-logs
 aws-backend-logs: ## Tail backend logs from CloudWatch
-	aws logs tail /ecs/$(PROJECT)-backend --follow --since 30m
+	aws logs tail /aws/lambda/$(BACKEND_FUNCTION) --follow --since 30m
 
-.PHONY: aws-backend-redeploy
-aws-backend-redeploy: ## Restart backend tasks without changing the image
-	aws ecs update-service --cluster $(PROJECT) --service $(PROJECT)-backend --force-new-deployment \
-	  --query "service.deployments[0].rolloutState" --output text
+.PHONY: aws-backend-health
+aws-backend-health: ## Call /api/health on the function URL (the first call after a pause wakes Aurora, ~15 s)
+	curl -fsS --max-time 60 $(API_URL)api/health && echo
 
 .PHONY: aws-backend-destroy
-aws-backend-destroy: aws-check ## Delete backend stacks (a final RDS snapshot is kept)
+aws-backend-destroy: aws-check ## Delete backend stacks (a final Aurora snapshot is kept)
 	@read -p "Delete stacks $(BACKEND_STACK) and $(BACKEND_ECR_STACK) in $(AWS_REGION)? [y/N] " ok && [ "$$ok" = y ]
 	aws cloudformation delete-stack --stack-name $(BACKEND_STACK)
 	aws cloudformation wait stack-delete-complete --stack-name $(BACKEND_STACK)
 	aws cloudformation delete-stack --stack-name $(BACKEND_ECR_STACK)
 	aws cloudformation wait stack-delete-complete --stack-name $(BACKEND_ECR_STACK)
-	aws ssm delete-parameter --name $(DB_PASSWORD_PARAM) || true
-	@echo "Done. Remove the final snapshot with: aws rds describe-db-snapshots --snapshot-type manual"
+	@echo "Done. Remove the final snapshot with: aws rds describe-db-cluster-snapshots --snapshot-type manual"
+
+##@ AWS frontend (S3 + CloudFront on the flat-rate Free plan, built with the backend URL)
+
+.PHONY: aws-frontend-deploy
+aws-frontend-deploy: aws-check aws-frontend-stack aws-frontend-publish aws-frontend-cors ## Deploy frontend: stack, build with the API URL, upload, allow its origin in the API
+	@echo
+	@echo "Site: $(call frontend_output,SiteUrl)"
+
+.PHONY: aws-frontend-stack
+aws-frontend-stack: ## Create/update the frontend stack (S3, CloudFront + WAF on the Free plan, custom domain once its certificate is issued)
+	aws cloudformation deploy --stack-name $(FRONTEND_STACK) --template-file infra/frontend.yaml \
+	  --no-fail-on-empty-changeset --tags $(STACK_TAGS) \
+	  --parameter-overrides ProjectName=$(PROJECT) PricingPlan=$(CLOUDFRONT_PLAN) \
+	    $(or $(FRONTEND_DOMAIN_ARGS),CertificateArn= DomainName= HostedZoneId=)
+
+.PHONY: aws-frontend-publish
+aws-frontend-publish: ## Build the SPA with VITE_API_URL=<function URL>, upload it, invalidate CloudFront
+	@api="$(API_URL)"; bucket="$(call frontend_output,BucketName)"; dist="$(call frontend_output,DistributionId)"; \
+	[ -n "$$api" ] || { echo "Backend not deployed: run \`make aws-backend-deploy\` first"; exit 1; }; \
+	[ -n "$$bucket" ] || { echo "Frontend stack not found: run \`make aws-frontend-stack\` first"; exit 1; }; \
+	echo "Building frontend with VITE_API_URL=$$api" && \
+	(cd front && npm ci --no-audit --no-fund && VITE_API_URL="$$api" npm run build) && \
+	aws s3 sync front/dist "s3://$$bucket" --delete --exclude index.html \
+	  --cache-control "public,max-age=31536000,immutable" && \
+	aws s3 cp front/dist/index.html "s3://$$bucket/index.html" --cache-control "no-cache" && \
+	aws cloudfront create-invalidation --distribution-id "$$dist" --paths "/*" \
+	  --query "Invalidation.Status" --output text
+
+.PHONY: aws-frontend-cors
+aws-frontend-cors: ## Allow the frontend's origins in the backend's CORS settings (keeps the current image)
+	@$(MAKE) --no-print-directory aws-backend-stack KEEP_IMAGE=1
+
+.PHONY: aws-frontend-outputs
+aws-frontend-outputs: ## Show frontend stack outputs (site URL, bucket, distribution)
+	@aws cloudformation describe-stacks --stack-name $(FRONTEND_STACK) \
+	  --query "Stacks[0].Outputs[].[OutputKey, OutputValue]" --output table
+
+.PHONY: aws-frontend-destroy
+aws-frontend-destroy: aws-check ## Empty the bucket and delete the frontend stack
+	@read -p "Delete stack $(FRONTEND_STACK) in $(AWS_REGION)? [y/N] " ok && [ "$$ok" = y ]
+	@bucket="$(call frontend_output,BucketName)"; [ -z "$$bucket" ] || aws s3 rm "s3://$$bucket" --recursive --quiet
+	aws cloudformation delete-stack --stack-name $(FRONTEND_STACK)
+	aws cloudformation wait stack-delete-complete --stack-name $(FRONTEND_STACK)
+
+##@ AWS frontend custom domain (FRONTEND_DOMAIN, optional)
+
+.PHONY: aws-frontend-cert
+aws-frontend-cert: aws-check ## Request (or reuse) the ACM certificate for FRONTEND_DOMAIN (us-east-1) and set up DNS validation
+	@$(CERT_SH) request $(FRONTEND_DOMAIN)
+
+.PHONY: aws-frontend-cert-status
+aws-frontend-cert-status: ## Show the certificate status and its DNS validation record
+	@$(CERT_SH) status $(FRONTEND_DOMAIN)
+
+.PHONY: aws-frontend-https
+aws-frontend-https: aws-frontend-cert ## Attach FRONTEND_DOMAIN: wait for the certificate, add it to CloudFront, update CORS, set up DNS
+	@$(CERT_SH) wait $(FRONTEND_DOMAIN)
+	@$(MAKE) --no-print-directory aws-frontend-stack
+	@$(MAKE) --no-print-directory aws-frontend-cors
+	@$(MAKE) --no-print-directory aws-frontend-dns
+
+.PHONY: aws-frontend-dns
+aws-frontend-dns: ## Show the DNS record that points FRONTEND_DOMAIN at CloudFront
+	@if [ -n "$(FRONTEND_ZONE_ID)" ]; then \
+	  echo "Route 53 alias $(FRONTEND_DOMAIN) -> CloudFront is managed by stack $(FRONTEND_STACK) (zone $(FRONTEND_ZONE_ID))."; \
+	else \
+	  echo "Add this record at the DNS provider of $(FRONTEND_DOMAIN):"; echo; \
+	  echo "  Type:  CNAME"; echo "  Name:  $(FRONTEND_DOMAIN)"; \
+	  echo "  Value: $(call frontend_output,DistributionDomain)"; \
+	fi
+	@echo; echo "Site: $(call frontend_output,SiteUrl)   (check: make aws-frontend-https-check)"
+
+.PHONY: aws-frontend-https-check
+aws-frontend-https-check: ## Check that https://FRONTEND_DOMAIN answers
+	@echo "DNS: $$(dig +short $(FRONTEND_DOMAIN) | tr '\n' ' ')"
+	curl -fsS -o /dev/null -w "%{http_code} %{url_effective}\n" https://$(FRONTEND_DOMAIN)/
 
 ##@ AWS (all parts)
 
 .PHONY: aws-deploy
-aws-deploy: aws-backend-deploy ## Deploy everything (backend today; add frontend here later)
+aws-deploy: aws-backend-deploy aws-frontend-deploy ## Deploy everything: backend first, then the frontend built with its URL
 
 .PHONY: aws-destroy
-aws-destroy: aws-backend-destroy ## Delete everything on AWS
+aws-destroy: aws-frontend-destroy aws-backend-destroy ## Delete everything on AWS
 
 ##@ Help
 
 .PHONY: help
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage: make \033[36m<target>\033[0m\n"} \
-	  /^[a-zA-Z_.-]+:.*?##/ { printf "  \033[36m%-24s\033[0m %s\n", $$1, $$2 } \
+	  /^[a-zA-Z_.-]+:.*?##/ { printf "  \033[36m%-26s\033[0m %s\n", $$1, $$2 } \
 	  /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) }' $(MAKEFILE_LIST)

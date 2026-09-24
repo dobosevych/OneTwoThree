@@ -5,14 +5,17 @@ from sqlalchemy import URL, make_url
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Either a full DATABASE_URL (docker compose, tests) or separate DB_* parts (AWS ECS,
-    # where the password comes from SSM and may contain characters that are unsafe in a URL).
+    # Either a full DATABASE_URL (docker compose, tests) or separate DB_* parts (AWS Lambda,
+    # where the password comes from Secrets Manager and may contain characters unsafe in a URL).
     database_url: str | None = None
     db_host: str = "localhost"
     db_port: int = 5432
     db_user: str = "meetings"
     db_password: str = "meetings"
     db_name: str = "meetings"
+    # Open a connection per request instead of pooling (Lambda + Aurora Serverless: idle pooled
+    # connections in warm execution environments would keep the database from pausing).
+    db_null_pool: bool = False
 
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
     seed: bool = False

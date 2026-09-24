@@ -28,8 +28,12 @@ function messageFrom(detail: unknown, status: number): string {
   return `Request failed (${status})`
 }
 
+// Backend origin, set at build time (the Lambda function URL on AWS). Empty = same origin,
+// where nginx (Docker Compose) or the Vite dev server proxies /api to the backend.
+const API_URL = (import.meta.env.VITE_API_URL ?? "").replace(/\/+$/, "")
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/api${path}`, {
+  const response = await fetch(`${API_URL}/api${path}`, {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
   })
