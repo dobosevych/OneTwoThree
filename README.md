@@ -200,3 +200,19 @@ make aws-frontend-https-check # 3. curl https://onetwothree.dobosevych.com/
 **Cost.** There is no load balancer, NAT gateway or public IPv4 address. Lambda and function URLs fit in the always-free tier for a small app. CloudFront runs on the flat-rate Free plan, which costs $0 with no overage charges and also covers its WAF web ACL (a per-IP rate limit). Requests that WAF blocks don't count toward the plan's allowance. Aurora Serverless v2 has no free tier. With `DbMinCapacity=0` it pauses after 5 idle minutes, and then you pay only for storage (about $0.10/GB-month). While active it costs about $0.12 per ACU-hour. The first request after a pause waits about 15 seconds while Aurora resumes. The DB credentials secret costs $0.40/month. Run `make aws-destroy` when you are done. It keeps a final Aurora snapshot.
 
 On AWS the backend reads `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` and `DB_PASSWORD` instead of `DATABASE_URL`. The password is generated in Secrets Manager and resolved into the function's environment at deploy time, so the VPC needs no internet access. `DB_NULL_POOL=true` closes connections after each request, because idle connections from warm Lambdas would stop Aurora from pausing. Migrations do not run on cold start. `make aws-backend-migrate` runs them, and every `aws-backend-deploy` calls it.
+
+## Deploy to Azure (lab 9)
+
+The same app runs on Azure next to AWS. Terraform lives in `azure/` (state in HCP Terraform
+workspace `meetings-azure`, local execution).
+
+- API: Azure Container Apps (`back/Dockerfile.azure`, image from Azure Container Registry).
+- Database: PostgreSQL inside the API container, not persistent (see `docs/adr/0008-azure-service-choices.md`).
+- Frontend: Azure Storage static website.
+- Sign-in stays on AWS Cognito; the API verifies its tokens through the public JWKS.
+
+Build and push the API image: `docker build -f back/Dockerfile.azure -t <acr>.azurecr.io/meetings-api:<tag> back`,
+then `docker push`. Build the frontend with `VITE_API_URL=<api_url>` and upload `front/dist` with
+`az storage blob upload-batch --destination '$web'`.
+
+Stop paying for it: `terraform destroy` in `azure/`.
